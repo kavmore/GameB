@@ -6,6 +6,8 @@
 
 #pragma warning(pop)
 
+#include <stdint.h>
+
 #include "Main.h"
 
 HWND gGameWindow; //默认全局变量为0
@@ -14,11 +16,24 @@ BOOL gGameIsRunning;
 
 void* Memory;
 
-GAMEBITMAP gDrawingSurface;
+GAMEBITMAP gBackBuffer;
+
+MONITORINFO gMonitorInfo = { sizeof(MONITORINFO) };
+
+int32_t gMonitorWidth;
+
+int32_t gMonitorHeight;
 
 
 int WinMain(HINSTANCE Instance, HINSTANCE PreviousInstance, PSTR CommandLine, int CmdShow)
 {
+    UNREFERENCED_PARAMETER(Instance);
+
+    UNREFERENCED_PARAMETER(PreviousInstance);
+
+    UNREFERENCED_PARAMETER(CommandLine);
+
+    UNREFERENCED_PARAMETER(CmdShow);
 
     // 系统内已经有另一个程序实例，则跳出错误窗口
     if (GameIsAlreadyRunning() == TRUE)
@@ -34,29 +49,28 @@ int WinMain(HINSTANCE Instance, HINSTANCE PreviousInstance, PSTR CommandLine, in
         goto Exit;
     }
 
-    gDrawingSurface.BitmapInfo.bmiHeader.biSize = sizeof(gDrawingSurface.BitmapInfo.bmiHeader);
+    gBackBuffer.BitmapInfo.bmiHeader.biSize         = sizeof(gBackBuffer.BitmapInfo.bmiHeader);
 
-    gDrawingSurface.BitmapInfo.bmiHeader.biWidth = GAME_RES_WIDTH;
+    gBackBuffer.BitmapInfo.bmiHeader.biWidth        = GAME_RES_WIDTH;
 
-    gDrawingSurface.BitmapInfo.bmiHeader.biHeight = GAME_RES_HEIGHT;
+    gBackBuffer.BitmapInfo.bmiHeader.biHeight       = GAME_RES_HEIGHT;
 
-    gDrawingSurface.BitmapInfo.bmiHeader.biBitCount = GAME_BPP;
+    gBackBuffer.BitmapInfo.bmiHeader.biBitCount     = GAME_BPP;
 
-    gDrawingSurface.BitmapInfo.bmiHeader.biCompression = BI_RGB;
+    gBackBuffer.BitmapInfo.bmiHeader.biCompression  = BI_RGB;
 
-    gDrawingSurface.BitmapInfo.bmiHeader.biPlanes = 1;
+    gBackBuffer.BitmapInfo.bmiHeader.biPlanes       = 1;
 
-    gDrawingSurface.Memory = VirtualAlloc(NULL, GAME_DRAWING_AREA_MEMORY_SIZE, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    gBackBuffer.Memory = VirtualAlloc(NULL, GAME_DRAWING_AREA_MEMORY_SIZE, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
 
-    if (gDrawingSurface.Memory == NULL)
+    if (gBackBuffer.Memory == NULL)
     {
         MessageBoxA(NULL, "Failed to allocate memory for drawing surface !", "Error!", MB_ICONEXCLAMATION | MB_OK);
 
         goto Exit;
     }
 
-
-
+    memset(gBackBuffer.Memory, 0x7F, GAME_DRAWING_AREA_MEMORY_SIZE);
 
     MSG Message = { 0 };
 
@@ -124,6 +138,8 @@ DWORD CreateMainGameWindow(void)
 
     WNDCLASSEXA WindowClass = { 0 };
 
+
+
     //Step 1: Registering the Window Class
     WindowClass.cbSize = sizeof(WNDCLASSEXA);
 
@@ -143,12 +159,14 @@ DWORD CreateMainGameWindow(void)
 
     WindowClass.hCursor = LoadCursorA(NULL, IDC_ARROW);
 
-    WindowClass.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+    WindowClass.hbrBackground = CreateSolidBrush(RGB(255,0,255));
 
     WindowClass.lpszMenuName = NULL;
 
     WindowClass.lpszClassName = GAME_NAME"_WINDOWCLASS";
 
+    // 忽略分辨率缩放
+    // SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
     // 如果该窗口没有注册成功，则跳出警告框
     if (RegisterClassExA(&WindowClass) == 0)
@@ -170,6 +188,39 @@ DWORD CreateMainGameWindow(void)
         Result = GetLastError();
 
         MessageBox(NULL, "Window Creation Failed!", "Error!", MB_ICONEXCLAMATION | MB_OK);
+
+        goto Exit;
+    }
+
+    // 如果没有获得显示器的信息，跳转到Exit
+    if(GetMonitorInfoA(MonitorFromWindow(gGameWindow, MONITOR_DEFAULTTOPRIMARY), &gMonitorInfo) == 0 )
+    {
+        Result = ERROR_MONITOR_NO_DESCRIPTOR;
+
+        goto Exit;
+    }
+
+    gMonitorWidth = gMonitorInfo.rcMonitor.right - gMonitorInfo.rcMonitor.left;
+
+    gMonitorHeight = gMonitorInfo.rcMonitor.bottom - gMonitorInfo.rcMonitor.top;
+
+    // ~ 按位取反       
+    // 1111 --> 0000  |  1010  --> 0101
+
+    // | 按位或                                                & 按位与
+    // 两个对应的二进制位只要有一个为1，结果位为1，否则为0         两个对应的二进制都为1时，结果位为1，否则为0
+    // 5(0101) | 3(0011)  --> 7(0111)                          5(0101) & 3(0011) --> 1(0001)
+
+    if (SetWindowLongPtrA(gGameWindow, GWL_STYLE, (WS_OVERLAPPEDWINDOW | WS_VISIBLE) & ~WS_OVERLAPPEDWINDOW) == 0)
+    {
+        Result = GetLastError();
+
+        goto Exit;
+    }
+
+    if (SetWindowPos(gGameWindow, HWND_TOPMOST, gMonitorInfo.rcMonitor.left, gMonitorInfo.rcMonitor.top, gMonitorWidth, gMonitorHeight, SWP_NOOWNERZORDER | SWP_FRAMECHANGED) == 0)
+    {
+        Result = GetLastError();
 
         goto Exit;
     }
@@ -197,7 +248,7 @@ BOOL GameIsAlreadyRunning(void)
 
 void ProcessPlayerInput(void) 
 {   
-    short EscapeKeyIsDown = GetAsyncKeyState(VK_ESCAPE);
+    int16_t EscapeKeyIsDown = GetAsyncKeyState(VK_ESCAPE);
 
     if (EscapeKeyIsDown)
     {
@@ -207,5 +258,38 @@ void ProcessPlayerInput(void)
 
 void RenderFrameGraphics(void)
 {
+    // memset(gBackBuffer.Memory, 0xFF, ((GAME_RES_WIDTH * GAME_RES_HEIGHT) * 4));
 
+    PIXEL32 Pixel = { 0 };
+
+    Pixel.Blue = 0xff;
+
+    Pixel.Green = 0;
+
+    Pixel.Red = 0;
+
+    Pixel.Alpha = 0xff;
+
+    for(int x =0; x < GAME_RES_WIDTH * GAME_RES_HEIGHT; x++)
+    { 
+        memcpy((PIXEL32*)gBackBuffer.Memory + x, &Pixel, sizeof(PIXEL32));
+    }
+
+    HDC DeviceContext = GetDC(gGameWindow);
+
+    StretchDIBits(DeviceContext,
+        0,
+        0,
+        gMonitorWidth,
+        gMonitorHeight,
+        0,
+        0,
+        GAME_RES_WIDTH,
+        GAME_RES_HEIGHT,
+        gBackBuffer.Memory,
+        &gBackBuffer.BitmapInfo,
+        DIB_RGB_COLORS,
+        SRCCOPY);
+
+    ReleaseDC(gGameWindow, DeviceContext);
 }
